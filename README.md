@@ -8,7 +8,7 @@ Structured intake forms for crafting high-quality prompts across each Microsoft 
 |---|---|
 | `specs/` | One markdown spec per capability area (purpose, activities, required + optional fields, example, expected output) |
 | `templates/` | Copy-paste prompt templates with bracket placeholders |
-| `docs/` | Master Word document containing all 19 specs in one file |
+| `docs/` | Master Word document containing all 19 specs in one file, plus the session continuity pattern |
 | `examples/` | (Optional) worked examples and sample outputs |
 | `.github/` | Issue templates for proposing new areas or refining existing ones |
 
@@ -49,6 +49,10 @@ Every well-formed Copilot prompt follows a five-slot structure. The more slots y
 | 17 | Visual Rendering (Adaptive Cards) | [spec](specs/17-visual-rendering.md) | [template](templates/17-visual-rendering.md) |
 | 18 | Recurring / Scheduled Tasks | [spec](specs/18-recurring-tasks.md) | [template](templates/18-recurring-tasks.md) |
 | 19 | Skills & Customization | [spec](specs/19-skills-customization.md) | [template](templates/19-skills-customization.md) |
+
+## Session continuity
+
+The repo includes a [Cowork Session Continuity Pattern](docs/cowork-memory-pattern.md) — a self-perpetuating memory pattern that lets Copilot resume multi-session projects cold, without re-briefing. Install it once and every future session picks up where the last one left off, including automatically re-running interrupted tasks.
 
 ## How to use
 
