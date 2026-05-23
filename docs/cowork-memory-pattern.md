@@ -25,7 +25,7 @@ In a fresh Cowork session, paste the following message:
 
 > Please set up the following memory pattern so that future sessions can resume cold. Create three files in the auto-memory directory and update MEMORY.md to index them. The three files are below — write them verbatim.
 
-Then paste the three file blocks below the prompt. Cowork will create the files in its memory directory (something like `/mnt/workspace/agent-state/projects/.../memory/`). After it confirms, the pattern is live for every future session in that workspace.
+Then paste the three file blocks below the prompt. Cowork will create the files in its memory directory. The exact path varies by environment (commonly `/mnt/workspace/agent-state/projects/.../memory/`), but you don't need to know it — Cowork resolves the correct location automatically when you ask it to write to memory. After it confirms, the pattern is live for every future session in that workspace.
 
 ---
 
@@ -49,11 +49,12 @@ At the end of every task the user gives you, update (or create) a `project_<name
   - **Status:** one line on where we are
   - **Files:** key paths in `output/` (source scripts in `working/` if still load-bearing)
   - **Recent decisions:** anything that would surprise a fresh-me — corrections, vocab choices, deliberate omissions
-  - **Incomplete:** any task the user asked for that didn't finish (interrupted, errored out, ran out of context). List each with: what was asked, what inputs are available, what's missing. Omit the section if nothing is incomplete.
+  - **Incomplete:** any task the user asked for that didn't finish (interrupted, errored out, ran out of context). List each with: what was asked, what inputs are available, what's missing. If the task depends on files in `working/`, note that these may not persist across sessions and flag which inputs would need to be regenerated. Omit the section if nothing is incomplete.
   - **Next:** what the user is likely to ask for next, or open threads
 - Keep it tight — under ~40 lines. This is a handoff note, not an archive.
 - If the task was trivial (a quick lookup, a one-line answer), skip the update — only write when state actually changed.
 - Do this silently as part of wrapping up; don't announce "I'm updating memory now."
+- **Memory cleanup:** if more than 10 `project_*.md` files exist, archive or remove the oldest stale ones to keep the memory directory lean and MEMORY.md under its line limit.
 ```
 
 ---
@@ -101,7 +102,7 @@ You ask Cowork to build a deck. It builds the deck. At the end, it silently crea
 You open a fresh Cowork session. `MEMORY.md` auto-loads, which pulls in your project state memory. Cowork already knows what was built, where it lives, what was decided. You can just say "add a slide on X" and it picks up.
 
 **Session 3 — task got interrupted last time:**
-Last session, Cowork was mid-rebuild when context ran out. At wrap-up it wrote `Incomplete: rebuild of consultant deck — source script at working/foo.js, methodology fix still needed at slides 5-8`. You open a fresh session. Cowork sees the incomplete item, sees the inputs are all there, and just re-runs it — telling you up front that's what it's doing.
+Last session, Cowork was mid-rebuild when context ran out. At wrap-up it wrote `Incomplete: rebuild of consultant deck — source script at working/foo.js (may need regenerating if working/ was cleared), methodology fix still needed at slides 5-8`. You open a fresh session. Cowork sees the incomplete item, checks whether the inputs still exist, and either re-runs it directly or tells you what needs to be recreated first.
 
 ## Scope and Caveats
 
@@ -109,7 +110,160 @@ Last session, Cowork was mid-rebuild when context ran out. At wrap-up it wrote `
 - **Cowork follows the rule because it's in feedback memory:** This isn't a hardcoded feature — it works because you've told Cowork (via the feedback memory) to do this at task end and session start. Cowork loads those instructions every session and applies them.
 - **You can edit the rules:** If you want a different template, different triggers, or different re-entry behaviour, just ask Cowork to update the relevant feedback memory. The pattern is yours to tune.
 - **Trivial tasks are skipped:** The rule explicitly says don't write a state memory for quick lookups or one-line answers — only when state actually changed. This stops the memory from filling with noise.
+- **Concurrent sessions:** If two sessions run against the same workspace at the same time, both could overwrite the same `project_*.md` file. Avoid running parallel sessions on the same project, or name the project memories differently per session.
 
 ## One More Tip
 
 When you start a brand new project in this workspace, the first time you give Cowork a substantive task, it'll create `project_<name>.md` for that project. If you want to seed the project name yourself, just say so: "Use `project_marketing_site.md` for this work." Otherwise Cowork picks a sensible name from context.
+
+---
+
+## Optional — Stop-hook backstop
+
+The pattern above relies on Cowork following its own feedback memory. That works almost all the time, but a Stop hook makes it bulletproof: at the moment Cowork tries to end a turn, the hook compares the freshness of `output/` against your project memory files and — if output is fresher — blocks the stop with a reminder to write the wrap-up.
+
+It's optional. Skip this section if you're happy with the soft-rule version.
+
+### How to install
+
+In a fresh Cowork session, paste:
+
+> Please install the Stop-hook backstop for the cowork memory pattern. Create the script and settings files below verbatim. Both live under `/mnt/user-config/.claude/` so they persist across sessions.
+
+Then paste the two file blocks below.
+
+### File A — `/mnt/user-config/.claude/hooks/wrap-up-check.py`
+
+```python
+#!/usr/bin/env python3
+"""
+Stop-hook backstop for the cowork session-continuity memory pattern.
+
+If files under /mnt/workspace/output/ have been modified more recently than any
+project_*.md memory file, block stop and remind the model to write the
+end-of-task wrap-up. Designed to be conservative: stays quiet when nothing
+substantive happened, when memory is already current, or when re-entered
+(stop_hook_active).
+"""
+import json
+import sys
+import time
+from pathlib import Path
+
+OUTPUT_DIR = Path("/mnt/workspace/output")
+MEMORY_ROOT = Path("/mnt/workspace/agent-state/projects")
+RECENT_WINDOW_SECONDS = 3600   # only nag if output was modified in the last hour
+GAP_TOLERANCE_SECONDS = 60     # ignore tiny clock-skew gaps
+DEBOUNCE_FILE = Path("/tmp/cowork_wrapup_hook_last_fire")
+DEBOUNCE_SECONDS = 120         # don't fire again within 2 minutes of last block
+
+
+def newest_mtime(paths):
+    times = []
+    for p in paths:
+        try:
+            times.append(p.stat().st_mtime)
+        except OSError:
+            continue
+    return max(times) if times else 0.0
+
+
+def main():
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+    except Exception:
+        sys.exit(0)
+
+    # Re-entry guard (two layers):
+    # 1. Hook-runner flag: if the runner sets stop_hook_active on re-entry,
+    #    exit cleanly to avoid an infinite block loop.
+    # 2. Timestamp debounce: if the hook fired within the last 2 minutes,
+    #    skip — this covers hook runners that don't inject stop_hook_active.
+    if payload.get("stop_hook_active"):
+        sys.exit(0)
+
+    if DEBOUNCE_FILE.exists():
+        try:
+            last_fire = DEBOUNCE_FILE.stat().st_mtime
+            if time.time() - last_fire < DEBOUNCE_SECONDS:
+                sys.exit(0)
+        except OSError:
+            pass
+
+    if not OUTPUT_DIR.exists():
+        sys.exit(0)
+
+    output_files = [p for p in OUTPUT_DIR.rglob("*") if p.is_file()]
+    if not output_files:
+        sys.exit(0)
+
+    newest_output = newest_mtime(output_files)
+    if time.time() - newest_output > RECENT_WINDOW_SECONDS:
+        sys.exit(0)
+
+    project_memories = (
+        list(MEMORY_ROOT.rglob("memory/project_*.md"))
+        if MEMORY_ROOT.exists() else []
+    )
+    newest_memory = newest_mtime(project_memories)
+
+    if newest_output - newest_memory <= GAP_TOLERANCE_SECONDS:
+        sys.exit(0)
+
+    # Write debounce marker so the hook won't fire again for 2 minutes
+    try:
+        DEBOUNCE_FILE.touch()
+    except OSError:
+        pass
+
+    reason = (
+        "Wrap-up backstop: files under output/ have been modified more recently "
+        "than any project_*.md memory file. Per the standing end-of-task rule, "
+        "update (or create) the relevant project memory now so future sessions "
+        "can resume cold. If this turn was trivial and no state actually "
+        "changed, briefly acknowledge that and stop — the backstop will not "
+        "fire again on re-entry."
+    )
+    print(json.dumps({"decision": "block", "reason": reason}))
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
+```
+
+### File B — `/mnt/user-config/.claude/settings.json`
+
+If `settings.json` already exists in user-config, merge the `hooks.Stop` entry into it instead of overwriting.
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "type": "command",
+        "command": "python3 /mnt/user-config/.claude/hooks/wrap-up-check.py"
+      }
+    ]
+  }
+}
+```
+
+> **Note:** The schema above uses the flat hook format (`Stop → [{ type, command }]`). If your environment uses nested hook definitions (`Stop → [{ hooks: [{ type, command }] }]`), adjust accordingly. When in doubt, ask Cowork to inspect your existing `settings.json` and merge the entry for you.
+
+### How it behaves
+
+- **Fires when:** something in `output/` was modified in the last hour AND is newer than every `project_*.md` memory file by more than 60 seconds.
+- **Stays quiet when:** `output/` is empty, no recent edits, memory is already up to date, the hook is being re-entered after a previous block (`stop_hook_active` flag), or the hook already fired within the last 2 minutes (timestamp debounce via `/tmp` marker).
+- **Re-entry protection:** Two layers — the `stop_hook_active` payload flag (if your hook runner supports it) and a file-based debounce timer (works universally). This prevents infinite block loops regardless of your environment.
+- **Tunables:** `RECENT_WINDOW_SECONDS` (default 3600), `GAP_TOLERANCE_SECONDS` (default 60), and `DEBOUNCE_SECONDS` (default 120) at the top of the script.
+
+### How to disable
+
+Either rename `/mnt/user-config/.claude/settings.json` or remove the `Stop` entry from it. The script alone, with no registration, does nothing.
+
+### Caveats
+
+- Paths are hard-coded to `/mnt/workspace/output/` and `/mnt/workspace/agent-state/projects/`. If your environment uses different paths, edit the two constants at the top of the script.
+- The hook is heuristic, not semantic — it only knows mtimes. If you save a project memory but then touch an unrelated file in `output/`, it'll fire again. The fix is usually to either ignore it (re-entry is silent) or update the memory.
+- Memory itself isn't portable across machines — the hook just enforces the pattern. You still need to install File 1, File 2, and the `MEMORY.md` entries on each new machine.
