@@ -50,9 +50,37 @@ Every well-formed Copilot prompt follows a five-slot structure. The more slots y
 | 18 | Recurring / Scheduled Tasks | [spec](specs/18-recurring-tasks.md) | [template](templates/18-recurring-tasks.md) |
 | 19 | Skills & Customization | [spec](specs/19-skills-customization.md) | [template](templates/19-skills-customization.md) |
 
-## Session continuity
+## Session Continuity Pattern (Start Here if You Do Multi-Session Work)
 
-The repo includes a [Cowork Session Continuity Pattern](docs/cowork-memory-pattern.md) — a self-perpetuating memory pattern that lets Copilot resume multi-session projects cold, without re-briefing. Install it once and every future session picks up where the last one left off, including automatically re-running interrupted tasks.
+> **This is the single most important thing in this repo if you work on projects that span more than one session.**
+
+Copilot sessions don't share memory by default. That means every time you come back, you re-brief from scratch — what was built, where it lives, what's still open, what decisions were made. Over a multi-week project, this burns real time and leads to dropped tasks.
+
+The **[Cowork Session Continuity Pattern](docs/cowork-memory-pattern.md)** fixes this with two self-perpetuating memory rules:
+
+| Rule | What it does |
+|---|---|
+| **End-of-task wrap-up** | At the end of every task, Copilot silently writes a project state file — status, file locations, decisions, incomplete work, and likely next steps |
+| **Start-of-session resume** | On the next session, Copilot reads that state file, picks up where you left off, and automatically re-runs any interrupted tasks (or flags what's missing) |
+
+**Once installed, it runs forever** — no reminders, no re-briefing, no dropped work. It also includes:
+
+- A **memory cleanup rule** to prevent stale project files from accumulating
+- A **working-file persistence warning** so interrupted tasks flag which inputs may need regenerating
+- An **optional stop-hook backstop** (a Python script + hook config) that blocks session exit if the wrap-up hasn't been written — making the pattern bulletproof, not just best-effort
+- **Dual re-entry protection** (payload flag + timestamp debounce) to prevent infinite loops in the hook
+
+### Quick install
+
+In a fresh Cowork session, paste:
+
+> *"Please set up the following memory pattern so that future sessions can resume cold."*
+
+Then paste the contents of **[cowork-memory-pattern.md](docs/cowork-memory-pattern.md)** — it contains the exact files and instructions. Takes 30 seconds.
+
+### Why this matters
+
+Without it, every session starts cold. With it, you can close your laptop on Friday, open it Monday, and say "add a slide on Q3 pipeline" — and Copilot already knows the deck, the style, the data sources, and the open items.
 
 ## How to use
 
